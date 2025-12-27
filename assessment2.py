@@ -12,16 +12,22 @@ start_time = perf_counter()
 ''' --- ALL CODE MUST BE INSIDE HERE --- '''
 
 # Import required libraries
-
+import geopandas as gpd
+import rasterio
 
 # 1.Data load
+# Set data path
 PARAMS = {
     'tweet_path': './data/wr/level3-tweets-subset.shp', 
     'pop_raster_path': './data/wr/100m_pop_2019.tif', 
     'district_path': './data/wr/gm-districts.shp',}
 
-
-
+# Load data
+def load_gis_data():
+    tweets = gpd.read_file(PARAMS['tweet_path'])
+    gm_districts = gpd.read_file(PARAMS['district_path'])
+    pop_raster = rasterio.open(PARAMS['pop_raster_path'])
+    
 
 # --- NO CODE BELOW HERE ---
 
