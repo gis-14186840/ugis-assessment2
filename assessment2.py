@@ -28,6 +28,10 @@ def load_gis_data():
     gm_districts = gpd.read_file(PARAMS['district_path'])
     pop_raster = rasterio.open(PARAMS['pop_raster_path'])
     
+# Merge boundaries and get study area
+def merge_gm_boundary(gm_districts):
+    gm_global_geom = gm_districts.geometry.union_all()
+    gm_bounds = gm_global_geom.bounds
 
 # --- NO CODE BELOW HERE ---
 
