@@ -17,6 +17,7 @@ import rasterio
 import numpy as np
 from shapely import Point
 from numpy.random import uniform
+from math import radians, sin, cos
 
 # 1.Set running foundation
 # Set data path
@@ -76,7 +77,17 @@ def get_raster_value(point, pop_raster):
     except IndexError:
         return 0
     
+# 4.Cartesian coordinate system point offset calculation
+def cartesian_offset(point, distance, azimuth):
     
+    # Convert azimuth from degrees to radians
+    azimuth_rad = radians(azimuth)
+    
+    # Calculate the offset
+    easting = point.x + sin(azimuth_rad) * distance
+    northing = point.y + cos(azimuth_rad) * distance
+    return Point(easting, northing)
+
 # --- NO CODE BELOW HERE ---
 
 # report runtime
