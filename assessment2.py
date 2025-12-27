@@ -14,8 +14,11 @@ start_time = perf_counter()
 # Import required libraries
 import geopandas as gpd
 import rasterio
+import numpy as np
+from shapely import Point
+from numpy.random import uniform
 
-# 1.Data load
+# 1.Set running foundation
 # Set data path
 PARAMS = {
     'tweet_path': './data/wr/level3-tweets-subset.shp', 
@@ -32,6 +35,35 @@ def load_gis_data():
 def merge_gm_boundary(gm_districts):
     gm_global_geom = gm_districts.geometry.union_all()
     gm_bounds = gm_global_geom.bounds
+    
+# 2.Generate random points in study area
+def generate_random_points(gm_global_geom, n=500):
+    
+    # Generate repeatable random points
+    np.random.seed(42)
+    min_x, min_y, max_x, max_y = gm_global_geom.bounds
+
+    # Generate 2 times the number of candidate points
+    x_coords = uniform(min_x, max_x, size=n * 2)
+    y_coords = uniform(min_y, max_y, size=n * 2)
+    
+    # Creat empty list
+    valid_points = []
+    
+    # Coordinate pairing
+    for x, y in zip(x_coords, y_coords):
+        point = Point(x, y)
+        
+        # Screen the points within the study area
+        if point.within(gm_global_geom):
+            valid_points.append(point)
+            
+            # Stop when the required number is reached
+            if len(valid_points) == n:
+                break
+
+
+
 
 # --- NO CODE BELOW HERE ---
 
