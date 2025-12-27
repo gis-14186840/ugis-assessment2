@@ -18,6 +18,7 @@ import numpy as np
 from shapely import Point
 from numpy.random import uniform, random
 from math import radians, sin, cos
+from shapely import Point, Polygon, minimum_bounding_circle
 
 # 1.Set running foundation
 # Set data path
@@ -31,11 +32,13 @@ def load_gis_data():
     tweets = gpd.read_file(PARAMS['tweet_path'])
     gm_districts = gpd.read_file(PARAMS['district_path'])
     pop_raster = rasterio.open(PARAMS['pop_raster_path'])
+    return tweets, pop_raster, gm_districts
     
 # Merge boundaries and get study area
 def merge_gm_boundary(gm_districts):
     gm_global_geom = gm_districts.geometry.union_all()
     gm_bounds = gm_global_geom.bounds
+    return gm_global_geom, gm_bounds, gm_districts
     
 # 2.Generate random points in study area
 def generate_random_points(gm_global_geom, n=500):
@@ -60,9 +63,9 @@ def generate_random_points(gm_global_geom, n=500):
             valid_points.append(point)
             
             # Stop when the required number is reached
-            if len(valid_points) == n:
-                break
-
+            if len(valid_points) == n: break
+    return valid_points
+    
 # 3.Extract population weight value from raster
 def get_raster_value(point, pop_raster):
 
@@ -115,6 +118,54 @@ def relocate_point(point, polygon, iterations, max_offset, pop_raster):
             
     return best_point, max_weight
 
+# 6.Seed points batch relocation & high-weight filtering
+def select_hotspot_seeds(random_points, gm_global_geom, pop_raster):
+    
+    # Calculate the minimum bounding circle
+    min_circle_poly = minimum_bounding_circle(gm_global_geom)
+    
+    # Calculate the circle center
+    center = min_circle_poly.centroid
+    
+    # Calculate the radius of the circle
+    min_circle_radius = center.distance(Point(min_circle_poly.exterior.coords[0]))
+    
+    # Define the fuzziness factor is 0.1
+    max_offset = min_circle_radius * 0.1
+    
+    # Creat candidate relocated seed points list
+    seed_candidates = []
+    
+    # Process each random point
+    for idx, point in enumerate(random_points):
+
+        # Iterate and relocation 10 times
+        relocated_point, weight = relocate_point(point, gm_global_geom, 10, max_offset, pop_raster)
+        
+        # Store the relocated point's coordinates and weight
+        seed_candidates.append((relocated_point.x, relocated_point.y, weight))
+    
+    # Sort candidate seed points in descending order
+    seed_candidates.sort(key=lambda x: x[2], reverse=True)
+    
+    # Select the top 35% of high‑weight seed points
+    top_seeds = seed_candidates[:int(len(seed_candidates)*0.35)]
+    
+    # Extract coordinates of selected seed points
+    seed_coords = np.array([(x, y) for x, y, w in top_seeds])
+    
+    # Extract seed points corresponding weights
+    seed_weights = np.array([w for x, y, w in top_seeds])
+       
+    return seed_coords, seed_weights
+
+# Test running
+if __name__ == "__main__":
+    tweets, pop_raster, gm_districts = load_gis_data()
+    gm_global_geom, gm_bounds, gm_districts = merge_gm_boundary(gm_districts)
+    random_points = generate_random_points(gm_global_geom)
+    seed_coords, seed_weights = select_hotspot_seeds(random_points, gm_global_geom, pop_raster)
+    print(f" {seed_coords.shape}")
 
 # --- NO CODE BELOW HERE ---
 
