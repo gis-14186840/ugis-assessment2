@@ -62,9 +62,21 @@ def generate_random_points(gm_global_geom, n=500):
             if len(valid_points) == n:
                 break
 
+# 3.Extract population weight value from raster
+def get_raster_value(point, pop_raster):
 
-
-
+    try:
+        # Convert geographic coordinates to raster indexes
+        row, col = pop_raster.index(point.x, point.y)
+        value = pop_raster.read(1)[row, col]
+        # Filter invalid values
+        return value if value >= 0 else 0
+    
+    # Return 0 when exceeding the raster range
+    except IndexError:
+        return 0
+    
+    
 # --- NO CODE BELOW HERE ---
 
 # report runtime
