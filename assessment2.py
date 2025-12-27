@@ -16,7 +16,7 @@ import geopandas as gpd
 import rasterio
 import numpy as np
 from shapely import Point
-from numpy.random import uniform
+from numpy.random import uniform, random
 from math import radians, sin, cos
 
 # 1.Set running foundation
@@ -87,6 +87,34 @@ def cartesian_offset(point, distance, azimuth):
     easting = point.x + sin(azimuth_rad) * distance
     northing = point.y + cos(azimuth_rad) * distance
     return Point(easting, northing)
+
+# 5.Single-point weighted iterative relocation
+def relocate_point(point, polygon, iterations, max_offset, pop_raster):
+    
+    # Initialize the best point
+    max_weight = -1
+    best_point = point
+    
+    # Generate random offset distance and azimuth
+    for _ in range(iterations):
+        offset_dist = random() * max_offset
+        offset_azimuth = random() * 359.9
+        
+        # Calculate the new point
+        relocated = cartesian_offset(point, offset_dist, offset_azimuth)
+        
+        # Filter points inside the study area 
+        if not relocated.within(polygon):
+            continue
+        current_weight = get_raster_value(relocated, pop_raster)
+        
+        # Compare population weight and keep higher weight
+        if current_weight > max_weight:
+            max_weight = current_weight
+            best_point = relocated
+            
+    return best_point, max_weight
+
 
 # --- NO CODE BELOW HERE ---
 
