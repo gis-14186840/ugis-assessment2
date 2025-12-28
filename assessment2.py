@@ -15,10 +15,15 @@ start_time = perf_counter()
 import geopandas as gpd
 import rasterio
 import numpy as np
+import os
+import matplotlib.pyplot as plt
 from shapely import Point
 from numpy.random import uniform, random
 from math import radians, sin, cos
 from shapely import Point, minimum_bounding_circle, STRtree
+from matplotlib_scalebar.scalebar import ScaleBar
+from shapely.vectorized import contains
+from matplotlib.colors import LinearSegmentedColormap
 
 # 1.Set running foundation
 # Set data path
@@ -237,8 +242,61 @@ def calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_g
 
     return X, Y, density
 
+# 8.Drawing the map
+def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
+   
+    # Generate gradient colours
+    colors = ['#368fc3', '#fffeca', '#e13024']
+    cmap = LinearSegmentedColormap.from_list(None, colors, N=10)
 
+    # Study area mask
+    d_masked = np.where(contains(gm_global_geom, X, Y), density, np.nan)
+    
+    # Create figure
+    fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+    
+    # Remove axes
+    ax.axis('off')
+    
+    # Set title
+    fig.suptitle('Weighted Redistribution of Royal Wedding Twitter Activity in Greater Manchester', 
+                 fontsize=16, ha='center')
+    
+    # Set boundary
+    x_min, y_min, x_max, y_max = gm_bounds
+    buffer = min(x_max - x_min, y_max - y_min) / 50
+    ax.set_xlim(x_min - buffer, x_max + buffer)
+    ax.set_ylim(y_min - buffer, y_max + buffer)
+    
+    # Plot administrative boundaries
+    gm_districts.plot(ax=ax, color='none', edgecolor='black', linewidth=0.8, zorder=2)
+    
+    # Plot heatmap
+    ax.imshow(d_masked, extent=[x_min, x_max, y_min, y_max], origin='lower',
+          cmap=cmap, vmin=density.min(), vmax=density.max(), alpha=0.9, zorder=1)
 
+    # Add scale bar
+    ax.add_artist(ScaleBar(dx=1, units="m", location="lower right",
+                       length_fraction=0.25, width_fraction=0.015,
+                       font_properties={'size':12}, color='black'))
+
+    # Add legend
+    legend_ax = ax.inset_axes([0.02, 0.02, 0.03, 0.15])
+    fig.colorbar(ax.images[0], cax=legend_ax, orientation='vertical').set_ticks([])
+    legend_ax.text(1.2, 0.95, 'Most Tweet Activity', ha='left', va='center', fontsize=10, transform=legend_ax.transAxes)
+    legend_ax.text(1.2, 0.05, 'Least Tweet Activity', ha='left', va='center', fontsize=10, transform=legend_ax.transAxes)
+
+    # Add north arrow
+    ax.annotate('N', xy=(0.95, 0.95), xytext=(0.95, 0.9),
+            arrowprops=dict(facecolor='black', width=4, headwidth=12),
+            ha='center', va='center', fontsize=14, xycoords='axes fraction')
+    plt.subplots_adjust(bottom=0.08, top=0.95, left=0.08, right=0.95)
+    
+    # Save the image
+    plt.savefig('./out/assessment2.png', dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+        
 # Test running
 if __name__ == "__main__":
     tweets, pop_raster, gm_districts = load_gis_data()
@@ -246,7 +304,8 @@ if __name__ == "__main__":
     random_points = generate_random_points(gm_global_geom)
     seed_coords, seed_weights = select_hotspot_seeds(random_points, gm_global_geom, pop_raster)
     X, Y, density = calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_geom)
-    print(f" {density.min():.2f} ~ {density.max():.2f}")
+    visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom)
+    print(f"done")
 
 # --- NO CODE BELOW HERE ---
 
