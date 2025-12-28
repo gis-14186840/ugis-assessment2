@@ -15,10 +15,11 @@ import rasterio
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+import shapely
 from shapely import Point
 from numpy.random import uniform, random
 from math import radians, sin, cos
-from shapely import Point, minimum_bounding_circle, STRtree
+from shapely import Point, minimum_bounding_circle
 from matplotlib_scalebar.scalebar import ScaleBar
 from shapely.vectorized import contains
 from matplotlib.colors import LinearSegmentedColormap
@@ -38,7 +39,7 @@ def merge_gm_boundary(gm_districts):
     return gm_global_geom, gm_bounds, gm_districts
     
 # 2.Generate random points in study area
-def generate_random_points(gm_global_geom, n=500):
+def generate_random_points(gm_global_geom, n=1000):
     
     # Generate repeatable random points
     np.random.seed(42)
@@ -127,8 +128,8 @@ def select_hotspot_seeds(random_points, gm_global_geom, pop_raster):
     # Calculate the radius of the circle
     min_circle_radius = center.distance(Point(min_circle_poly.exterior.coords[0]))
     
-    # Define the fuzziness factor is 0.1
-    max_offset = min_circle_radius * 0.1
+    # Define the fuzziness factor is 0.2
+    max_offset = min_circle_radius * 0.2
     
     # Creat candidate relocated seed points list
     seed_candidates = []
@@ -137,7 +138,7 @@ def select_hotspot_seeds(random_points, gm_global_geom, pop_raster):
     for idx, point in enumerate(random_points):
 
         # Iterate and relocation 10 times
-        relocated_point, weight = relocate_point(point, gm_global_geom, 10, max_offset, pop_raster)
+        relocated_point, weight = relocate_point(point, gm_global_geom, 20, max_offset, pop_raster)
         
         # Store the relocated point's coordinates and weight
         seed_candidates.append((relocated_point.x, relocated_point.y, weight))
@@ -241,7 +242,7 @@ def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
     cmap = LinearSegmentedColormap.from_list(None, colors, N=10)
 
     # Study area mask
-    d_masked = np.where(contains(gm_global_geom, X, Y), density, np.nan)
+    d_masked = np.where(shapely.contains_xy(gm_global_geom, X, Y), density, np.nan)
     
     # Create figure
     fig, ax = plt.subplots(1, 1, figsize=(16, 10))
