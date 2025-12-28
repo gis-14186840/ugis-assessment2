@@ -41,23 +41,16 @@ def generate_random_points(gm_global_geom, n=500):
     np.random.seed(42)
     min_x, min_y, max_x, max_y = gm_global_geom.bounds
 
-    # Generate 2 times the number of candidate points
-    x_coords = uniform(min_x, max_x, size=n * 2)
-    y_coords = uniform(min_y, max_y, size=n * 2)
-    
     # Creat empty list
     valid_points = []
     
-    # Coordinate pairing
-    for x, y in zip(x_coords, y_coords):
-        point = Point(x, y)
+    # Generating random points
+    while len(valid_points) < n:
+        x, y = uniform(min_x, max_x), uniform(min_y, max_y)
         
-        # Screen the points within the study area
-        if point.within(gm_global_geom):
-            valid_points.append(point)
-            
-            # Stop when the required number is reached
-            if len(valid_points) == n: break
+        # Check the point inside the boundary
+        if gm_global_geom.contains(Point(x, y)):
+            valid_points.append(Point(x, y))
     
     return valid_points
     
@@ -191,16 +184,13 @@ def calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_g
     
     return X, Y, np.where(shapely.contains_xy(gm_global_geom, X, Y), density, np.nan)
 
-# 8.Drawing the map
+# 6.Drawing the map
 def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
    
     # Generate gradient colours
     colors = ['#368fc3', '#fffeca', '#e13024']
     cmap = LinearSegmentedColormap.from_list(None, colors, N=10)
 
-    # Study area mask
-    d_masked = np.where(shapely.contains_xy(gm_global_geom, X, Y), density, np.nan)
-    
     # Create figure
     fig, ax = plt.subplots(1, 1, figsize=(16, 10))
     
@@ -221,8 +211,8 @@ def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
     gm_districts.plot(ax=ax, color='none', edgecolor='black', linewidth=0.8, zorder=2)
     
     # Plot heatmap
-    ax.imshow(d_masked, extent=[x_min, x_max, y_min, y_max], origin='lower',
-          cmap=cmap, vmin=density.min(), vmax=density.max(), alpha=0.9, zorder=1)
+    ax.imshow(density, extent=[x_min, x_max, y_min, y_max], origin='lower',
+          cmap=cmap, vmin=np.nanmin(density), vmax=np.nanmax(density), alpha=0.9, zorder=1)
 
     # Add scale bar
     ax.add_artist(ScaleBar(dx=1, units="m", location="lower right",
@@ -239,6 +229,8 @@ def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
     ax.annotate('N', xy=(0.95, 0.95), xytext=(0.95, 0.9),
             arrowprops=dict(facecolor='black', width=4, headwidth=12),
             ha='center', va='center', fontsize=14, xycoords='axes fraction')
+    
+    # Adjust the spacing
     plt.subplots_adjust(bottom=0.08, top=0.95, left=0.08, right=0.95)
     
     # Save the image
