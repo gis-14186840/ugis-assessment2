@@ -9,8 +9,6 @@ start_time = perf_counter()
 
 # --- NO CODE ABOVE HERE ---
 
-''' --- ALL CODE MUST BE INSIDE HERE --- '''
-
 # Import required libraries
 import geopandas as gpd
 import rasterio
@@ -26,17 +24,11 @@ from shapely.vectorized import contains
 from matplotlib.colors import LinearSegmentedColormap
 
 # 1.Set running foundation
-# Set data path
-PARAMS = {
-    'tweet_path': './data/wr/level3-tweets-subset.shp', 
-    'pop_raster_path': './data/wr/100m_pop_2019.tif', 
-    'district_path': './data/wr/gm-districts.shp',}
-
 # Load data
 def load_gis_data():
-    tweets = gpd.read_file(PARAMS['tweet_path'])
-    gm_districts = gpd.read_file(PARAMS['district_path'])
-    pop_raster = rasterio.open(PARAMS['pop_raster_path'])
+    tweets = gpd.read_file("./data/wr/level3-tweets-subset.shp")
+    gm_districts = gpd.read_file("./data/wr/gm-districts.shp")
+    pop_raster = rasterio.open("./data/wr/100m_pop_2019.tif")
     return tweets, pop_raster, gm_districts
     
 # Merge boundaries and get study area
@@ -219,8 +211,7 @@ def calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_g
         
         # Skip seed points outside the boundary
         if (grid_i < 0 or grid_i >= grid_size or 
-            grid_j < 0 or grid_j >= grid_size):
-            continue
+            grid_j < 0 or grid_j >= grid_size): continue
         
         # Calculate the valid superposition range on the density grid
         # Determine the x direction
@@ -294,18 +285,16 @@ def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
     
     # Save the image
     plt.savefig('./out/assessment2.png', dpi=300, bbox_inches='tight')
-    plt.close(fig)
-
         
-# Test running
+# Main program
 if __name__ == "__main__":
+    # Full workflow call
     tweets, pop_raster, gm_districts = load_gis_data()
     gm_global_geom, gm_bounds, gm_districts = merge_gm_boundary(gm_districts)
     random_points = generate_random_points(gm_global_geom)
     seed_coords, seed_weights = select_hotspot_seeds(random_points, gm_global_geom, pop_raster)
     X, Y, density = calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_geom)
     visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom)
-    print(f"done")
 
 # --- NO CODE BELOW HERE ---
 
