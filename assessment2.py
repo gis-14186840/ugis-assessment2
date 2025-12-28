@@ -58,6 +58,7 @@ def generate_random_points(gm_global_geom, n=500):
             
             # Stop when the required number is reached
             if len(valid_points) == n: break
+    
     return valid_points
     
 # 3.Extract population weight value from raster
@@ -74,70 +75,40 @@ def get_raster_value(point, pop_raster):
     except IndexError:
         return 0
     
-# 4.Cartesian coordinate system point offset calculation
-def cartesian_offset(point, distance, azimuth):
+# 4.Single-point weighted iterative relocation & high-weight filtering
+def relocate_point(random_points, polygon, pop_raster, iterations=10):
     
-    # Convert azimuth from degrees to radians
-    azimuth_rad = radians(azimuth)
-    
-    # Calculate the offset
-    easting = point.x + sin(azimuth_rad) * distance
-    northing = point.y + cos(azimuth_rad) * distance
-    return Point(easting, northing)
-
-# 5.Single-point weighted iterative relocation
-def relocate_point(point, polygon, iterations, max_offset, pop_raster):
-    
-    # Initialize the best point
-    max_weight = -1
-    best_point = point
-    
-    # Generate random offset distance and azimuth
-    for _ in range(iterations):
-        offset_dist = random() * max_offset
-        offset_azimuth = random() * 359.9
-        
-        # Calculate the new point
-        relocated = cartesian_offset(point, offset_dist, offset_azimuth)
-        
-        # Filter points inside the study area 
-        if not relocated.within(polygon):
-            continue
-        current_weight = get_raster_value(relocated, pop_raster)
-        
-        # Compare population weight and keep higher weight
-        if current_weight > max_weight:
-            max_weight = current_weight
-            best_point = relocated
-            
-    return best_point, max_weight
-
-# 6.Seed points batch relocation & high-weight filtering
-def select_hotspot_seeds(random_points, gm_global_geom, pop_raster):
-    
-    # Calculate the minimum bounding circle
+    # Calculate minimum bounding circle
     min_circle_poly = minimum_bounding_circle(gm_global_geom)
-    
-    # Calculate the circle center
     center = min_circle_poly.centroid
-    
-    # Calculate the radius of the circle
     min_circle_radius = center.distance(Point(min_circle_poly.exterior.coords[0]))
     
-    # Define the fuzziness factor is 0.15
-    max_offset = min_circle_radius * 0.15
+    # Define the fuzziness factor
+    max_offset = min_circle_radius * 0.1
     
     # Creat candidate relocated seed points list
     seed_candidates = []
     
-    # Process each random point
-    for idx, point in enumerate(random_points):
-
-        # Iterate and relocation 10 times
-        relocated_point, weight = relocate_point(point, gm_global_geom, 10, max_offset, pop_raster)
+    # Relocate points and collect weights
+    for p in random_points:
         
-        # Store the relocated point's coordinates and weight
-        seed_candidates.append((relocated_point.x, relocated_point.y, weight))
+        # Initialization the optimal point and the optimal weight
+        best_point, max_weight = p, -1
+        
+        # Randomly generate the offset direction and distance
+        for _ in range(iterations):
+            relocated = Point(
+                p.x + sin(radians(random()*360)) * (random()*max_offset),
+                p.y + cos(radians(random()*360)) * (random()*max_offset))
+            
+            # Filter points within the range
+            if gm_global_geom.contains(relocated):
+                current_weight = get_raster_value(relocated, pop_raster)
+                
+                # Update the candidate point when the weight is higher
+                if current_weight > max_weight:
+                    best_point, max_weight = relocated, current_weight
+        seed_candidates.append((best_point.x, best_point.y, max_weight))
     
     # Sort candidate seed points in descending order
     seed_candidates.sort(key=lambda x: x[2], reverse=True)
@@ -288,7 +259,7 @@ if __name__ == "__main__":
     # Full workflow call
     tweets, pop_raster, gm_districts, gm_global_geom, gm_bounds = load_gis_data()
     random_points = generate_random_points(gm_global_geom)
-    seed_coords, seed_weights = select_hotspot_seeds(random_points, gm_global_geom, pop_raster)
+    seed_coords, seed_weights = relocate_point(random_points, gm_global_geom, pop_raster)
     X, Y, density = calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_geom)
     visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom)
 
