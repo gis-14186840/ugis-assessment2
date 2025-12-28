@@ -124,7 +124,7 @@ def relocate_point(random_points, polygon, pop_raster, iterations=10):
        
     return seed_coords, seed_weights
 
-# 7.Calculate the weighted density
+# 5.Calculate the weighted density
 def calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_geom):
 
     # Set boundary
@@ -141,65 +141,55 @@ def calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_g
     density = np.zeros((grid_size, grid_size), dtype=np.float32)
 
     # Calculate average pixel resolution
-    pixel_res_x = (x_max - x_min) / grid_size
-    pixel_res_y = (y_max - y_min) / grid_size
-    avg_pixel_res = (pixel_res_x + pixel_res_y) / 2
+    avg_pixel_res = ((x_max - x_min) + (y_max - y_min)) / (2 * grid_size)
 
     # Convert fuzzy radius in pixels
     fuzzy_radius_px = int(np.ceil(fuzzy_radius / avg_pixel_res))
     
-    # Generate linear attenuation fuzzy kernel matrix
-    # Set matrix
+    # Calculate the size of the fuzzy kernel
     kernel_size = 2 * fuzzy_radius_px + 1
-    fuzzy_kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
-    kernel_center = fuzzy_radius_px  
-
-    # Assign linear attenuation weights for each pixel
-    for ky in range(kernel_size):
-        for kx in range(kernel_size):
-            # Calculate the pixel offset distance
-            dx_px = kx - kernel_center
-            dy_px = ky - kernel_center
-            geo_dist = np.hypot(dx_px * avg_pixel_res, dy_px * avg_pixel_res)
-            
-            # Sey linear attenuation rule
-            if geo_dist <= fuzzy_radius:
-                fuzzy_kernel[ky, kx] = 1 - (geo_dist / fuzzy_radius)
-
+    
+    # Generate index grids
+    yk, xk = np.ogrid[-fuzzy_radius_px:fuzzy_radius_px+1, -fuzzy_radius_px:fuzzy_radius_px+1]
+    
+    # Calculate the distance of kernel cells
+    geo_dist = np.hypot(xk*avg_pixel_res, yk*avg_pixel_res)
+    
+    # Generate fuzzy kernel
+    fuzzy_kernel = np.where(geo_dist <= fuzzy_radius, 1 - geo_dist/fuzzy_radius, 0).astype(np.float32)
+    
     # Perform weighted superposition of fuzzy kernel matrix
-    for seed_idx, (seed_x, seed_y) in enumerate(seed_coords):
-        # Get the weight of the current seed point
-        seed_weight = seed_weights[seed_idx]
+    for (seed_x, seed_y), seed_weight in zip(seed_coords, seed_weights):
+
         # Skip seed points with non-positive weight
         if seed_weight <= 0: continue
         
         # Convert seed point coordinates to grid pixel indices
-        grid_i = int(np.round((seed_x - x_min) / pixel_res_x))
-        grid_j = int(np.round((seed_y - y_min) / pixel_res_y))
+        grid_i = int(np.round((seed_x - x_min) / ((x_max - x_min)/grid_size)))
+        grid_j = int(np.round((seed_y - y_min) / ((y_max - y_min)/grid_size)))
         
         # Skip seed points outside the boundary
-        if (grid_i < 0 or grid_i >= grid_size or 
-            grid_j < 0 or grid_j >= grid_size): continue
+        if 0 <= grid_i < grid_size and 0 <= grid_j < grid_size:
         
-        # Calculate the valid superposition range on the density grid
-        # Determine the x direction
-        start_i = max(0, grid_i - fuzzy_radius_px)
-        end_i = min(grid_size, grid_i + fuzzy_radius_px + 1)
-        # Determine the y direction
-        start_j = max(0, grid_j - fuzzy_radius_px)
-        end_j = min(grid_size, grid_j + fuzzy_radius_px + 1)
+            # Calculate the valid superposition range on the density grid
+            # Determine the x direction
+            start_i = max(0, grid_i - fuzzy_radius_px)
+            end_i = min(grid_size, grid_i + fuzzy_radius_px + 1)
+            # Determine the y direction
+            start_j = max(0, grid_j - fuzzy_radius_px)
+            end_j = min(grid_size, grid_j + fuzzy_radius_px + 1)
         
-        # Calculate the valid slice range of the kernel matrix
-        kernel_start_i = max(0, fuzzy_radius_px - grid_i)
-        kernel_end_i = kernel_size - max(0, (grid_i + fuzzy_radius_px + 1) - grid_size)
-        kernel_start_j = max(0, fuzzy_radius_px - grid_j)
-        kernel_end_j = kernel_size - max(0, (grid_j + fuzzy_radius_px + 1) - grid_size)
+            # Calculate the valid slice range of the kernel matrix
+            kernel_start_i = max(0, fuzzy_radius_px - grid_i)
+            kernel_end_i = kernel_size - max(0, (grid_i + fuzzy_radius_px + 1) - grid_size)
+            kernel_start_j = max(0, fuzzy_radius_px - grid_j)
+            kernel_end_j = kernel_size - max(0, (grid_j + fuzzy_radius_px + 1) - grid_size)
         
-        # Weighted superposition and accumulate to density grid
-        density[start_j:end_j, start_i:end_i] += (
-            fuzzy_kernel[kernel_start_j:kernel_end_j, kernel_start_i:kernel_end_i] * seed_weight)
-
-    return X, Y, density
+            # Weighted superposition and accumulate to density grid
+            density[start_j:end_j, start_i:end_i] += (
+                fuzzy_kernel[kernel_start_j:kernel_end_j, kernel_start_i:kernel_end_i] * seed_weight)
+    
+    return X, Y, np.where(shapely.contains_xy(gm_global_geom, X, Y), density, np.nan)
 
 # 8.Drawing the map
 def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
