@@ -13,33 +13,29 @@ start_time = perf_counter()
 import geopandas as gpd
 import rasterio
 import numpy as np
-import os
 import matplotlib.pyplot as plt
 import shapely
-from shapely import Point
 from numpy.random import uniform, random
 from math import radians, sin, cos
 from shapely import Point, minimum_bounding_circle
 from matplotlib_scalebar.scalebar import ScaleBar
-from shapely.vectorized import contains
 from matplotlib.colors import LinearSegmentedColormap
 
 # 1.Set running foundation
-# Load data
 def load_gis_data():
+    
+    # Load data
     tweets = gpd.read_file("./data/wr/level3-tweets-subset.shp")
     gm_districts = gpd.read_file("./data/wr/gm-districts.shp")
     pop_raster = rasterio.open("./data/wr/100m_pop_2019.tif")
-    return tweets, pop_raster, gm_districts
     
-# Merge boundaries and get study area
-def merge_gm_boundary(gm_districts):
-    gm_global_geom = gm_districts.geometry.union_all()
+    # Merge boundaries to get study area
+    gm_global_geom = gm_districts.unary_union
     gm_bounds = gm_global_geom.bounds
-    return gm_global_geom, gm_bounds, gm_districts
+    return tweets, pop_raster, gm_districts, gm_global_geom, gm_bounds
     
 # 2.Generate random points in study area
-def generate_random_points(gm_global_geom, n=1000):
+def generate_random_points(gm_global_geom, n=500):
     
     # Generate repeatable random points
     np.random.seed(42)
@@ -128,8 +124,8 @@ def select_hotspot_seeds(random_points, gm_global_geom, pop_raster):
     # Calculate the radius of the circle
     min_circle_radius = center.distance(Point(min_circle_poly.exterior.coords[0]))
     
-    # Define the fuzziness factor is 0.2
-    max_offset = min_circle_radius * 0.2
+    # Define the fuzziness factor is 0.15
+    max_offset = min_circle_radius * 0.15
     
     # Creat candidate relocated seed points list
     seed_candidates = []
@@ -138,7 +134,7 @@ def select_hotspot_seeds(random_points, gm_global_geom, pop_raster):
     for idx, point in enumerate(random_points):
 
         # Iterate and relocation 10 times
-        relocated_point, weight = relocate_point(point, gm_global_geom, 20, max_offset, pop_raster)
+        relocated_point, weight = relocate_point(point, gm_global_geom, 10, max_offset, pop_raster)
         
         # Store the relocated point's coordinates and weight
         seed_candidates.append((relocated_point.x, relocated_point.y, weight))
@@ -290,8 +286,7 @@ def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
 # Main program
 if __name__ == "__main__":
     # Full workflow call
-    tweets, pop_raster, gm_districts = load_gis_data()
-    gm_global_geom, gm_bounds, gm_districts = merge_gm_boundary(gm_districts)
+    tweets, pop_raster, gm_districts, gm_global_geom, gm_bounds = load_gis_data()
     random_points = generate_random_points(gm_global_geom)
     seed_coords, seed_weights = select_hotspot_seeds(random_points, gm_global_geom, pop_raster)
     X, Y, density = calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_geom)
