@@ -39,34 +39,40 @@ def generate_random_points(study_area, n=500):
     np.random.seed(42)
     min_x, min_y, max_x, max_y = study_area.bounds
 
-    # Creat empty list
+    # List to store valid random points (points inside the study area)
     valid_points = []
     
-    # Generating random points
+    # Keep generating points until the required number is reached
     while len(valid_points) < n:
-        x, y = uniform(min_x, max_x), uniform(min_y, max_y)
+        # Randomly generate x and y coordinates within the bounding box
+        x = uniform(min_x, max_x)
+        y = uniform(min_y, max_y)
+        point = Point(x, y)
         
-        # Check the point inside the boundary
-        if study_area.contains(Point(x, y)):
-            valid_points.append(Point(x, y))
+        # Only retain points that are inside the study area geometry
+        if study_area.contains(point):
+            valid_points.append(point)
     
     return valid_points
     
-# 3.Extract population weight value from raster
+# 3.Extract population weight value from raster based on the point's geographic coordinates
 def get_raster_value(point, pop_raster):
 
     try:
-        # Convert geographic coordinates to raster indexes
+        # Convert geographic coordinates to raster row and column indices
         row, col = pop_raster.index(point.x, point.y)
+        
+        # Read the pixel value at the corresponding row and column
         value = pop_raster.read(1)[row, col]
+        
         # Filter invalid values
         return value if value >= 0 else 0
     
-    # Return 0 when exceeding the raster range
+    # Return 0 if the point is out of the raster range (trigger IndexError)
     except IndexError:
         return 0
     
-# 4.Single-point weighted iterative relocation & high-weight filtering
+# 4.Perform weighted iterative relocation for random points and select high-weight seed points
 def relocate_point(random_points, area_geom, pop_raster, iterations=10):
     
     # Calculate minimum bounding circle of the study area to determine the maximum offset range
@@ -74,10 +80,10 @@ def relocate_point(random_points, area_geom, pop_raster, iterations=10):
     circle_center = min_circle.centroid
     min_circle_radius = circle_center.distance(Point(min_circle.exterior.coords[0]))
     
-    # List to store candidate seed points
+    # Set the fuzziness factor to avoid excessive displacement
     max_offset = min_circle_radius * 0.1
     
-    # Creat candidate relocated seed points list
+    # List to store candidate seed points
     seed_candidates = []
     
     # Perform iterative relocation for each random point
@@ -121,7 +127,7 @@ def relocate_point(random_points, area_geom, pop_raster, iterations=10):
        
     return seed_coords, seed_weights
 
-# 5.Calculate the weighted density
+# 5.Calculate the weighted density of seed points
 def calculate_weighted_density(seed_coords, seed_weights, area_bounds, gm_global_geom):
 
     # Set boundary
@@ -131,28 +137,28 @@ def calculate_weighted_density(seed_coords, seed_weights, area_bounds, gm_global
     grid_size = 500
     fuzzy_radius = 1000
 
-    # Create density calculation grid
+    # Generate grid coordinate sequences and meshgrid for density visualization
     x_grid = np.linspace(x_min, x_max, grid_size)
     y_grid = np.linspace(y_min, y_max, grid_size)
     X, Y = np.meshgrid(x_grid, y_grid)
-    density = np.zeros((grid_size, grid_size), dtype=np.float32)
+    density = np.zeros((grid_size, grid_size), dtype=np.float32) # Initialize density matrix with 0
 
     # Calculate average pixel resolution
     avg_pixel_res = ((x_max - x_min) + (y_max - y_min)) / (2 * grid_size)
 
-    # Convert fuzzy radius in pixels
+    # Convert fuzzy radius from meters to pixel units
     fuzzy_radius_px = int(np.ceil(fuzzy_radius / avg_pixel_res))
     
     # Calculate the size of the fuzzy kernel
     kernel_size = 2 * fuzzy_radius_px + 1
     
-    # Generate index grids
+    # Generate index grids for fuzzy kernel
     yk, xk = np.ogrid[-fuzzy_radius_px:fuzzy_radius_px+1, -fuzzy_radius_px:fuzzy_radius_px+1]
     
     # Calculate the distance of kernel cells
     geo_dist = np.hypot(xk*avg_pixel_res, yk*avg_pixel_res)
     
-    # Generate fuzzy kernel
+    # Generate fuzzy kernel (linear attenuation within radius, 0 outside radius)
     fuzzy_kernel = np.where(geo_dist <= fuzzy_radius, 1 - geo_dist/fuzzy_radius, 0).astype(np.float32)
     
     # Perform weighted superposition of fuzzy kernel matrix
@@ -186,12 +192,14 @@ def calculate_weighted_density(seed_coords, seed_weights, area_bounds, gm_global
             density[start_j:end_j, start_i:end_i] += (
                 fuzzy_kernel[kernel_start_j:kernel_end_j, kernel_start_i:kernel_end_i] * seed_weight)
     
-    return X, Y, np.where(shapely.contains_xy(gm_global_geom, X, Y), density, np.nan)
+    # Set density values outside the study area to NaN
+    density_masked = np.where(shapely.contains_xy(study_area, X, Y), density, np.nan)
+    return X, Y, density_masked
 
 # 6.Drawing the map
 def visualize_hotspot(gm_districts, X, Y, density, area_bounds, gm_global_geom):
    
-    # Generate gradient colours
+    # Custom colors: blue → yellow → red (corresponding to low to high density)
     colors = ['#368fc3', '#fffeca', '#e13024']
     cmap = LinearSegmentedColormap.from_list(None, colors, N=10)
 
@@ -205,7 +213,7 @@ def visualize_hotspot(gm_districts, X, Y, density, area_bounds, gm_global_geom):
     fig.suptitle('Weighted Redistribution of Royal Wedding Twitter Activity in Greater Manchester', 
                  fontsize=16, ha='center')
     
-    # Set boundary
+    # Set display range with a small buffer to show the study area completely
     x_min, y_min, x_max, y_max = area_bounds
     buffer = min(x_max - x_min, y_max - y_min) / 50
     ax.set_xlim(x_min - buffer, x_max + buffer)
@@ -214,7 +222,7 @@ def visualize_hotspot(gm_districts, X, Y, density, area_bounds, gm_global_geom):
     # Plot administrative boundaries
     gm_districts.plot(ax=ax, color='none', edgecolor='black', linewidth=0.8, zorder=2)
     
-    # Plot heatmap
+    # Plot density heatmap
     ax.imshow(density, extent=[x_min, x_max, y_min, y_max], origin='lower',
           cmap=cmap, vmin=np.nanmin(density), vmax=np.nanmax(density), alpha=0.9, zorder=1)
 
@@ -234,15 +242,15 @@ def visualize_hotspot(gm_districts, X, Y, density, area_bounds, gm_global_geom):
             arrowprops=dict(facecolor='black', width=4, headwidth=12),
             ha='center', va='center', fontsize=14, xycoords='axes fraction')
     
-    # Adjust the spacing
+    # Adjust figure margins to avoid clipping title and elements
     plt.subplots_adjust(bottom=0.08, top=0.95, left=0.08, right=0.95)
     
     # Save the image
     plt.savefig('./out/assessment2.png', dpi=300, bbox_inches='tight')
         
-# Main program
+# Main function: program entry point (only execute when running this script directly)
 if __name__ == "__main__":
-    # Full workflow call
+    # Call functions in sequence to complete the full workflow
     tweets, pop_raster, gm_districts, study_area, area_bounds = load_gis_data()
     random_points = generate_random_points(study_area)
     seed_coords, seed_weights = relocate_point(random_points, study_area, pop_raster)
