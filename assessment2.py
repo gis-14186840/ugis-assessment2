@@ -21,25 +21,23 @@ from shapely import Point, minimum_bounding_circle
 from matplotlib_scalebar.scalebar import ScaleBar
 from matplotlib.colors import LinearSegmentedColormap
 
-# 1.Set running foundation
+# 1.Load all required GIS data files
 def load_gis_data():
-    
-    # Load data
     tweets = gpd.read_file("./data/wr/level3-tweets-subset.shp")
     gm_districts = gpd.read_file("./data/wr/gm-districts.shp")
     pop_raster = rasterio.open("./data/wr/100m_pop_2019.tif")
     
     # Merge boundaries to get study area
-    gm_global_geom = gm_districts.unary_union
-    gm_bounds = gm_global_geom.bounds
-    return tweets, pop_raster, gm_districts, gm_global_geom, gm_bounds
+    study_area = gm_districts.union_all()
+    area_bounds = study_area.bounds
+    return tweets, pop_raster, gm_districts, study_area, area_bounds
     
 # 2.Generate random points in study area
-def generate_random_points(gm_global_geom, n=500):
+def generate_random_points(study_area, n=500):
     
     # Generate repeatable random points
     np.random.seed(42)
-    min_x, min_y, max_x, max_y = gm_global_geom.bounds
+    min_x, min_y, max_x, max_y = study_area.bounds
 
     # Creat empty list
     valid_points = []
@@ -49,7 +47,7 @@ def generate_random_points(gm_global_geom, n=500):
         x, y = uniform(min_x, max_x), uniform(min_y, max_y)
         
         # Check the point inside the boundary
-        if gm_global_geom.contains(Point(x, y)):
+        if study_area.contains(Point(x, y)):
             valid_points.append(Point(x, y))
     
     return valid_points
@@ -69,39 +67,46 @@ def get_raster_value(point, pop_raster):
         return 0
     
 # 4.Single-point weighted iterative relocation & high-weight filtering
-def relocate_point(random_points, polygon, pop_raster, iterations=10):
+def relocate_point(random_points, area_geom, pop_raster, iterations=10):
     
-    # Calculate minimum bounding circle
-    min_circle_poly = minimum_bounding_circle(gm_global_geom)
-    center = min_circle_poly.centroid
-    min_circle_radius = center.distance(Point(min_circle_poly.exterior.coords[0]))
+    # Calculate minimum bounding circle of the study area to determine the maximum offset range
+    min_circle = minimum_bounding_circle(area_geom)
+    circle_center = min_circle.centroid
+    min_circle_radius = circle_center.distance(Point(min_circle.exterior.coords[0]))
     
-    # Define the fuzziness factor
+    # List to store candidate seed points
     max_offset = min_circle_radius * 0.1
     
     # Creat candidate relocated seed points list
     seed_candidates = []
     
-    # Relocate points and collect weights
+    # Perform iterative relocation for each random point
     for p in random_points:
         
-        # Initialization the optimal point and the optimal weight
-        best_point, max_weight = p, -1
+        # Set initial weight to a small value for easy update
+        best_point = p
+        best_weight = -1
         
-        # Randomly generate the offset direction and distance
+        # Iterate 10 times to find the optimal position with the highest weight
         for _ in range(iterations):
-            relocated = Point(
-                p.x + sin(radians(random()*360)) * (random()*max_offset),
-                p.y + cos(radians(random()*360)) * (random()*max_offset))
+            # Randomly calculate offset angle and distance
+            angle = radians(random() * 360)
+            dist = random() * max_offset
+            new_x = p.x + sin(angle) * dist
+            new_y = p.y + cos(angle) * dist
+            new_p = Point(new_x, new_y)
             
             # Filter points within the range
-            if gm_global_geom.contains(relocated):
-                current_weight = get_raster_value(relocated, pop_raster)
+            if area_geom.contains(new_p):
+                current_weight = get_raster_value(new_p, pop_raster)
                 
                 # Update the candidate point when the weight is higher
-                if current_weight > max_weight:
-                    best_point, max_weight = relocated, current_weight
-        seed_candidates.append((best_point.x, best_point.y, max_weight))
+                if current_weight > best_weight:
+                    best_point = new_p
+                    best_weight = current_weight
+                    
+        # Add the optimal point (after relocation) to candidate list
+        seed_candidates.append((best_point.x, best_point.y, best_weight))
     
     # Sort candidate seed points in descending order
     seed_candidates.sort(key=lambda x: x[2], reverse=True)
@@ -109,19 +114,18 @@ def relocate_point(random_points, polygon, pop_raster, iterations=10):
     # Select the top 35% of high‑weight seed points
     top_seeds = seed_candidates[:int(len(seed_candidates)*0.35)]
     
-    # Extract coordinates of selected seed points
-    seed_coords = np.array([(x, y) for x, y, w in top_seeds])
     
-    # Extract seed points corresponding weights
+    # Split coordinates and weights from top seed points, then convert to numpy array
+    seed_coords = np.array([(x, y) for x, y, w in top_seeds])
     seed_weights = np.array([w for x, y, w in top_seeds])
        
     return seed_coords, seed_weights
 
 # 5.Calculate the weighted density
-def calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_geom):
+def calculate_weighted_density(seed_coords, seed_weights, area_bounds, gm_global_geom):
 
     # Set boundary
-    x_min, y_min, x_max, y_max = gm_bounds
+    x_min, y_min, x_max, y_max = area_bounds
 
     # Set grid parameters
     grid_size = 500
@@ -185,7 +189,7 @@ def calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_g
     return X, Y, np.where(shapely.contains_xy(gm_global_geom, X, Y), density, np.nan)
 
 # 6.Drawing the map
-def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
+def visualize_hotspot(gm_districts, X, Y, density, area_bounds, gm_global_geom):
    
     # Generate gradient colours
     colors = ['#368fc3', '#fffeca', '#e13024']
@@ -202,7 +206,7 @@ def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
                  fontsize=16, ha='center')
     
     # Set boundary
-    x_min, y_min, x_max, y_max = gm_bounds
+    x_min, y_min, x_max, y_max = area_bounds
     buffer = min(x_max - x_min, y_max - y_min) / 50
     ax.set_xlim(x_min - buffer, x_max + buffer)
     ax.set_ylim(y_min - buffer, y_max + buffer)
@@ -239,11 +243,11 @@ def visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom):
 # Main program
 if __name__ == "__main__":
     # Full workflow call
-    tweets, pop_raster, gm_districts, gm_global_geom, gm_bounds = load_gis_data()
-    random_points = generate_random_points(gm_global_geom)
-    seed_coords, seed_weights = relocate_point(random_points, gm_global_geom, pop_raster)
-    X, Y, density = calculate_weighted_density(seed_coords, seed_weights, gm_bounds, gm_global_geom)
-    visualize_hotspot(gm_districts, X, Y, density, gm_bounds, gm_global_geom)
+    tweets, pop_raster, gm_districts, study_area, area_bounds = load_gis_data()
+    random_points = generate_random_points(study_area)
+    seed_coords, seed_weights = relocate_point(random_points, study_area, pop_raster)
+    X, Y, density = calculate_weighted_density(seed_coords, seed_weights, area_bounds, study_area)
+    visualize_hotspot(gm_districts, X, Y, density, area_bounds, study_area)
 
 # --- NO CODE BELOW HERE ---
 
