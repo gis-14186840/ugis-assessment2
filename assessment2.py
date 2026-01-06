@@ -23,8 +23,8 @@ from matplotlib.colors import LinearSegmentedColormap
 # 1.Load all required GIS data files and Set algorithm parameters
 
 # Algorithm parameters
-PARAM_W = 20    # w: Weighting influence
-PARAM_S = 0.5   # s: Spatial ambiguity
+PARAM_W = 20    # Weighting influence
+PARAM_S = 0.5   # Spatial ambiguity
 
 # Load all required GIS data files
 def load_gis_data():
@@ -38,82 +38,69 @@ def load_gis_data():
     # Ensure Coordinate Reference Systems match
     if tweets.crs != gm_districts.crs:
         tweets = tweets.to_crs(gm_districts.crs)
-    
-    # Calculate the total bounds of the study area
-    area_bounds = gm_districts.total_bounds
-    
+       
     # Get study area
     area_bounds = gm_districts.total_bounds
     
     return tweets, pop_raster, pop_data, gm_districts, area_bounds
+           
+# 2.Perform weighted redistribution
+def perform_weighted_redistribution(tweets, gm_districts, pop_raster, pop_data):
        
-# 2.Extract population weight value from raster based on the point's geographic coordinates
-def get_raster_value(point, pop_raster, pop_data):
-
-    try:
-        # Convert geographic coordinates to raster row and column indices
-        row, col = pop_raster.index(point.x, point.y)
-        
-        # Read the pixel value at the corresponding row and column
-        if 0 <= row < pop_data.shape[0] and 0 <= col < pop_data.shape[1]:
-            return pop_data[row, col]
-        else:
-            return 0
-            
-    # Return 0 if the point is out of the raster range (trigger IndexError)
-    except IndexError:
-        return 0
-    
-# 3.Perform weighted redistribution
-def perform_weighted_redistribution(tweets, districts, pop_raster, pop_data):
-       
-    # List to store final seed data
+    # List to store final redistributed tweet locations
     final_seeds = []
 
     # Iterate through each administrative district
-    for index, district in districts.iterrows():
+    for index, district in gm_districts.iterrows():
         geom = district.geometry
         
-        # Find all actual tweets located within this district
+        # Select all actual tweets located within this district
         tweets_in_district = tweets[tweets.within(geom)]
         
-        if len(tweets_in_district) == 0:
-            continue
+        # Avoid empty data
+        if len(tweets_in_district) == 0: continue
             
         # Calculate dynamic radius for this district
         r_meters = math.sqrt((geom.area * PARAM_S) / math.pi)
         
-        # Get bounding box of the district for random point generation
+        # Get bounding box of the district
         minx, miny, maxx, maxy = geom.bounds
+        height, width = pop_data.shape
         
         # Process each tweet in this district
         for i in range(len(tweets_in_district)):
             
+            # Variable to store best candidate point for tweet
             best_candidate = None
+            
+            # Tracks the highest population-weight value (initialized to -1)
             max_pop_val = -1
             
-            # Generate 'W' random candidate points
+            # Counter for number of random candidate points
             candidates_tried = 0
+            
+            # Generate 'Weighting index' random candidate points
             while candidates_tried < PARAM_W:
-                # Cartesian random point generation (Bounding Box)
+                
+                # Generate random point 
                 rx = uniform(minx, maxx)
                 ry = uniform(miny, maxy)
                 p_cand = Point(rx, ry)
                 
-                # Check if the random point is actually inside the district geometry
+                # Check random points inside the boundary
                 if geom.contains(p_cand):
-                    # Get population density weight for this candidate
-                    val = get_raster_value(p_cand, pop_raster, pop_data)
+                    
+                    # Get population density weight for candidate points
+                    row, col = pop_raster.index(p_cand.x, p_cand.y)
+                    val = pop_data[row, col] if 0 <= row < height and 0 <= col < width else 0
                     
                     # Keep the candidate with the highest population weight
-                    if val > max_pop_val:
-                        max_pop_val = val
-                        best_candidate = p_cand
+                    if val > max_pop_val: max_pop_val, best_candidate = val, p_cand
                     
-                    # Ensure we have at least one candidate
-                    if best_candidate is None:
-                        best_candidate = p_cand
+                    # Ensure have at least one candidate
+                    if best_candidate is None: best_candidate = p_cand
                         
+                    # Record generated candidate point
                     candidates_tried += 1
             
             # Store the best candidate location and the calculated radius
@@ -122,7 +109,7 @@ def perform_weighted_redistribution(tweets, districts, pop_raster, pop_data):
                 
     return final_seeds
 
-# 4.Calculate the weighted density of seed points
+# 3.Calculate the weighted density
 def calculate_weighted_density(seeds_data, pop_raster, pop_data):
 
     # Use the native shape of the population raster
@@ -132,7 +119,6 @@ def calculate_weighted_density(seeds_data, pop_raster, pop_data):
     # Get pixel resolution from raster transform
     pixel_res = pop_raster.transform[0]
     
-    # Kernel Caching
     # Store calculated kernel shapes
     kernel_cache = {}
     
@@ -141,7 +127,6 @@ def calculate_weighted_density(seeds_data, pop_raster, pop_data):
 
         # Convert radius from meters to pixels
         r_px = int(r_meters / pixel_res)
-        if r_px < 1: r_px = 1
         
         # Get center grid indices directly using rasterio
         center_row, center_col = pop_raster.index(seed_x, seed_y)
@@ -157,6 +142,7 @@ def calculate_weighted_density(seeds_data, pop_raster, pop_data):
     
         # Create the Kernel
         if r_px not in kernel_cache:
+            
             # Create local coordinate grid for the kernel
             ky, kx = np.ogrid[-r_px:r_px+1, -r_px:r_px+1]
             dist_matrix = np.sqrt(kx**2 + ky**2)
@@ -166,27 +152,30 @@ def calculate_weighted_density(seeds_data, pop_raster, pop_data):
             kernel[kernel < 0] = 0 # Clip values outside circle
             
             # Cache the result
-            kernel_cache[r_px] = kernel.astype(np.float32)
-        
-        full_kernel = kernel_cache[r_px]
-        
+            kernel_cache[r_px] = kernel
+               
         # Calculate slicing offsets to map kernel to the density grid
         k_start_i = start_i - (center_row - r_px)
         k_end_i   = k_start_i + (end_i - start_i)
         k_start_j = start_j - (center_col - r_px)
         k_end_j   = k_start_j + (end_j - start_j)
         
-        # Add kernel to the density matrix (Vectorized Addition)
-        density[start_i:end_i, start_j:end_j] += full_kernel[k_start_i:k_end_i, k_start_j:k_end_j]
+        # Retrieve the pre-calculated kernel for this radius
+        full_kernel = kernel_cache[r_px]
+        
+        # Extract the specific portion of the kernel to add
+        kernel_slice = full_kernel[k_start_i:k_end_i, k_start_j:k_end_j]
+        
+        # Add this kernel chunk to the main density map
+        density[start_i:end_i, start_j:end_j] += kernel_slice
 
     return density
 
-# 5.Drawing the map
+# 4.Drawing the map
 def visualize_hotspot(gm_districts, density, area_bounds):
    
     # Custom colors: blue → yellow → red (corresponding to low to high density)
-    colors = ['#368fc3', '#fffeca', '#e13024']
-    cmap = LinearSegmentedColormap.from_list(None, colors)
+    cmap = LinearSegmentedColormap.from_list(None, ['#368fc3', '#fffeca', '#e13024'])
 
     # Create figure
     fig, ax = plt.subplots(1, 1, figsize=(16, 10))
@@ -196,7 +185,7 @@ def visualize_hotspot(gm_districts, density, area_bounds):
     
     # Set title
     fig.suptitle('Weighted Redistribution of Royal Wedding Twitter Activity in Greater Manchester', 
-                 fontsize=16, ha='center')
+                 fontsize=17, ha='center')
     
     # Set display range with a small buffer to show the study area completely
     x_min, y_min, x_max, y_max = area_bounds
@@ -213,14 +202,13 @@ def visualize_hotspot(gm_districts, density, area_bounds):
 
     # Add scale bar
     ax.add_artist(ScaleBar(dx=1, units="m", location="lower right",
-                       length_fraction=0.25, width_fraction=0.015,
-                       font_properties={'size':12}, color='black'))
+                       length_fraction=0.25, font_properties={'size':13}))
 
     # Add legend
     legend_ax = ax.inset_axes([0.02, 0.02, 0.03, 0.15])
     fig.colorbar(ax.images[0], cax=legend_ax, orientation='vertical').set_ticks([])
-    legend_ax.text(1.2, 0.95, 'Most Tweet Activity', ha='left', va='center', fontsize=10, transform=legend_ax.transAxes)
-    legend_ax.text(1.2, 0.05, 'Least Tweet Activity', ha='left', va='center', fontsize=10, transform=legend_ax.transAxes)
+    legend_ax.text(1.2, 0.95, 'High Tweet Activity', fontsize=14, transform=legend_ax.transAxes)
+    legend_ax.text(1.2, 0.05, 'Low Tweet Activity', fontsize=14, transform=legend_ax.transAxes)
 
     # Add north arrow
     ax.annotate('N', xy=(0.95, 0.95), xytext=(0.95, 0.9),
@@ -233,9 +221,9 @@ def visualize_hotspot(gm_districts, density, area_bounds):
     # Save the image
     plt.savefig('./out/assessment2.png', dpi=300, bbox_inches='tight')
         
-# Main function: program entry point (only execute when running this script directly)
+# Main function: program entry point
 if __name__ == "__main__":
-    # Call functions in sequence to complete the full workflow
+    # Running functions in sequence
     tweets, pop_raster, pop_data, gm_districts, area_bounds = load_gis_data()
     seeds_data = perform_weighted_redistribution(tweets, gm_districts, pop_raster, pop_data)
     density = calculate_weighted_density(seeds_data, pop_raster, pop_data)
