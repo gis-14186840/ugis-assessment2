@@ -14,25 +14,26 @@ import geopandas as gpd
 import rasterio
 import numpy as np
 import matplotlib.pyplot as plt
-import shapely
 import math
-from numpy.random import uniform, random
-from math import radians, sin, cos
-from shapely import Point, minimum_bounding_circle
+from numpy.random import uniform
+from shapely import Point
 from matplotlib_scalebar.scalebar import ScaleBar
 from matplotlib.colors import LinearSegmentedColormap
 
 # 1.Load all required GIS data files and Set algorithm parameters
 
 # Algorithm parameters
-PARAM_W = 10    # w: Weighting influence
-PARAM_S = 0.1   # s: Spatial ambiguity
+PARAM_W = 20    # w: Weighting influence
+PARAM_S = 0.5   # s: Spatial ambiguity
 
 # Load all required GIS data files
 def load_gis_data():
     tweets = gpd.read_file("./data/wr/level3-tweets-subset.shp")
     gm_districts = gpd.read_file("./data/wr/gm-districts.shp")
     pop_raster = rasterio.open("./data/wr/100m_pop_2019.tif")
+    
+    # Read the data into the memory
+    pop_data = pop_raster.read(1)
     
     # Ensure Coordinate Reference Systems match
     if tweets.crs != gm_districts.crs:
@@ -44,27 +45,27 @@ def load_gis_data():
     # Get study area
     area_bounds = gm_districts.total_bounds
     
-    return tweets, pop_raster, gm_districts, area_bounds
+    return tweets, pop_raster, pop_data, gm_districts, area_bounds
        
 # 2.Extract population weight value from raster based on the point's geographic coordinates
-def get_raster_value(point, pop_raster):
+def get_raster_value(point, pop_raster, pop_data):
 
     try:
         # Convert geographic coordinates to raster row and column indices
         row, col = pop_raster.index(point.x, point.y)
         
         # Read the pixel value at the corresponding row and column
-        value = pop_raster.read(1)[row, col]
-        
-        # Filter invalid values
-        return value if value >= 0 else 0
-    
+        if 0 <= row < pop_data.shape[0] and 0 <= col < pop_data.shape[1]:
+            return pop_data[row, col]
+        else:
+            return 0
+            
     # Return 0 if the point is out of the raster range (trigger IndexError)
     except IndexError:
         return 0
     
 # 3.Perform weighted redistribution
-def perform_weighted_redistribution(tweets, districts, pop_raster):
+def perform_weighted_redistribution(tweets, districts, pop_raster, pop_data):
        
     # List to store final seed data
     final_seeds = []
@@ -79,8 +80,7 @@ def perform_weighted_redistribution(tweets, districts, pop_raster):
         if len(tweets_in_district) == 0:
             continue
             
-        # Calculate dynamic radius 'r' for this district
-        # Equation 1: r = sqrt((Area * s) / pi)
+        # Calculate dynamic radius for this district
         r_meters = math.sqrt((geom.area * PARAM_S) / math.pi)
         
         # Get bounding box of the district for random point generation
@@ -103,7 +103,7 @@ def perform_weighted_redistribution(tweets, districts, pop_raster):
                 # Check if the random point is actually inside the district geometry
                 if geom.contains(p_cand):
                     # Get population density weight for this candidate
-                    val = get_raster_value(p_cand, pop_raster)
+                    val = get_raster_value(p_cand, pop_raster, pop_data)
                     
                     # Keep the candidate with the highest population weight
                     if val > max_pop_val:
@@ -123,64 +123,70 @@ def perform_weighted_redistribution(tweets, districts, pop_raster):
     return final_seeds
 
 # 4.Calculate the weighted density of seed points
-def calculate_weighted_density(seeds_data, area_bounds):
+def calculate_weighted_density(seeds_data, pop_raster, pop_data):
 
-    # Set boundary
-    x_min, y_min, x_max, y_max = area_bounds
+    # Use the native shape of the population raster
+    height, width = pop_data.shape
+    density = np.zeros((height, width), dtype=np.float32)
 
-    # Set grid parameters
-    grid_size = 500
-
-    # Generate grid coordinate sequences and meshgrid for density visualization
-    x_grid = np.linspace(x_min, x_max, grid_size)
-    y_grid = np.linspace(y_min, y_max, grid_size)
-    X, Y = np.meshgrid(x_grid, y_grid)
-    density = np.zeros((grid_size, grid_size), dtype=np.float32) # Initialize density matrix with 0
-
-    # Calculate average pixel resolution
-    avg_pixel_res = ((x_max - x_min) + (y_max - y_min)) / (2 * grid_size)
+    # Get pixel resolution from raster transform
+    pixel_res = pop_raster.transform[0]
+    
+    # Kernel Caching
+    # Store calculated kernel shapes
+    kernel_cache = {}
     
     # Iterate through each relocated seed point
     for seed_x, seed_y, r_meters in seeds_data:
 
         # Convert radius from meters to pixels
-        r_px = int(r_meters / avg_pixel_res)
+        r_px = int(r_meters / pixel_res)
         if r_px < 1: r_px = 1
         
-        # Find grid indices for the seed center
-        grid_j = int((seed_x - x_min) / (x_max - x_min) * grid_size)
-        grid_i = int((seed_y - y_min) / (y_max - y_min) * grid_size)
+        # Get center grid indices directly using rasterio
+        center_row, center_col = pop_raster.index(seed_x, seed_y)
         
-        # Skip seed points outside the boundary
-        if 0 <= grid_i < grid_size and 0 <= grid_j < grid_size:
+        # Define bounds for the splat operation
+        start_i = max(0, center_row - r_px)
+        end_i = min(height, center_row + r_px + 1)
+        start_j = max(0, center_col - r_px)
+        end_j = min(width, center_col + r_px + 1)
         
-            # Calculate the valid superposition range on the density grid
-            # Determine the x direction
-            start_i = max(0, grid_i - r_px)
-            end_i = min(grid_size, grid_i + r_px + 1)
-            # Determine the y direction
-            start_j = max(0, grid_j - r_px)
-            end_j = min(grid_size, grid_j + r_px + 1)
+        # Skip if completely out of bounds
+        if start_i >= end_i or start_j >= end_j: continue
+    
+        # Create the Kernel
+        if r_px not in kernel_cache:
+            # Create local coordinate grid for the kernel
+            ky, kx = np.ogrid[-r_px:r_px+1, -r_px:r_px+1]
+            dist_matrix = np.sqrt(kx**2 + ky**2)
+            
+            # Calaulate Kernel
+            kernel = 1 - (dist_matrix / r_px)
+            kernel[kernel < 0] = 0 # Clip values outside circle
+            
+            # Cache the result
+            kernel_cache[r_px] = kernel.astype(np.float32)
         
-            # Calculate the valid slice range of the kernel matrix
-            for y in range(start_i, end_i):
-                for x in range(start_j, end_j):
-                    # Euclidean distance in pixels
-                    dist_px = math.sqrt((x - grid_j)**2 + (y - grid_i)**2)
-                    
-                    if dist_px <= r_px:
-                        # Linear decay function
-                        val = 1 - (dist_px / r_px)
-                        density[y, x] += val  
+        full_kernel = kernel_cache[r_px]
+        
+        # Calculate slicing offsets to map kernel to the density grid
+        k_start_i = start_i - (center_row - r_px)
+        k_end_i   = k_start_i + (end_i - start_i)
+        k_start_j = start_j - (center_col - r_px)
+        k_end_j   = k_start_j + (end_j - start_j)
+        
+        # Add kernel to the density matrix (Vectorized Addition)
+        density[start_i:end_i, start_j:end_j] += full_kernel[k_start_i:k_end_i, k_start_j:k_end_j]
 
-    return X, Y, density
+    return density
 
 # 5.Drawing the map
-def visualize_hotspot(gm_districts, X, Y, density, area_bounds):
+def visualize_hotspot(gm_districts, density, area_bounds):
    
     # Custom colors: blue → yellow → red (corresponding to low to high density)
     colors = ['#368fc3', '#fffeca', '#e13024']
-    cmap = LinearSegmentedColormap.from_list(None, colors, N=10)
+    cmap = LinearSegmentedColormap.from_list(None, colors)
 
     # Create figure
     fig, ax = plt.subplots(1, 1, figsize=(16, 10))
@@ -202,7 +208,7 @@ def visualize_hotspot(gm_districts, X, Y, density, area_bounds):
     gm_districts.plot(ax=ax, color='none', edgecolor='black', linewidth=0.8, zorder=2)
     
     # Plot density heatmap
-    ax.imshow(density, extent=[x_min, x_max, y_min, y_max], origin='lower',
+    ax.imshow(density, extent=[x_min, x_max, y_min, y_max], origin='upper',
           cmap=cmap, vmin=np.nanmin(density), vmax=np.nanmax(density), alpha=0.9, zorder=1)
 
     # Add scale bar
@@ -230,10 +236,10 @@ def visualize_hotspot(gm_districts, X, Y, density, area_bounds):
 # Main function: program entry point (only execute when running this script directly)
 if __name__ == "__main__":
     # Call functions in sequence to complete the full workflow
-    tweets, pop_raster, gm_districts, area_bounds = load_gis_data()
-    seeds_data = perform_weighted_redistribution(tweets, gm_districts, pop_raster)
-    X, Y, density = calculate_weighted_density(seeds_data, area_bounds)
-    visualize_hotspot(gm_districts, X, Y, density, area_bounds)
+    tweets, pop_raster, pop_data, gm_districts, area_bounds = load_gis_data()
+    seeds_data = perform_weighted_redistribution(tweets, gm_districts, pop_raster, pop_data)
+    density = calculate_weighted_density(seeds_data, pop_raster, pop_data)
+    visualize_hotspot(gm_districts, density, area_bounds)
 
 # --- NO CODE BELOW HERE ---
 
